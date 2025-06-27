@@ -5,9 +5,11 @@ from random import shuffle
 from tqdm import tqdm
 
 
+
 def pad_row(row, block_size, pad_token):
     pad_len = block_size - len(row)
     row.extend(pad_len*[pad_token])
+
 
 def pack_tokens(sequences, block_size, pad_token):
     batch = []
@@ -24,13 +26,32 @@ def pack_tokens(sequences, block_size, pad_token):
         batch.append(row)
     return batch
 
-def collate_fn(batch):
-    x, y, seq, pos = list(zip(*batch))
-    x = torch.tensor(x, dtype=torch.long)
-    y = torch.tensor(y, dtype=torch.long)
-    seq = torch.tensor(seq, dtype=torch.long)
-    pos = torch.tensor(pos, dtype=torch.long)
-    return x, y, seq, pos
+
+def create_packed_attention_mask(sequence_ids):
+    """
+    Create attention mask for packed sequences.
+    
+    Args:
+        sequence_ids: (B, T) tensor where each element indicates which sequence 
+                     the token belongs to. Different sequences should have different IDs.
+    Returns:
+        attention_mask: (B, T, T) tensor where attention_mask[b, i, j] = True if 
+                       token i can attend to token j, False otherwise
+    """
+    B, T = sequence_ids.shape
+    device = sequence_ids.device
+    
+    # Create a mask where tokens can only attend to tokens from the same sequence
+    # sequence_ids: (B, T) -> (B, T, 1) and (B, 1, T)
+    seq_mask = (sequence_ids.unsqueeze(-1) == sequence_ids.unsqueeze(1))  # (B, T, T)
+    
+    # Create causal mask
+    causal_mask = torch.tril(torch.ones(T, T, device=device, dtype=torch.bool))  # (T, T)
+    
+    # Combine: can attend if same sequence AND causal
+    attention_mask = seq_mask & causal_mask.unsqueeze(0)  # (B, T, T)
+    
+    return attention_mask.unsqueeze(1)
 
 
 def create_position_ids(sequence_ids):
@@ -67,6 +88,7 @@ def create_position_ids(sequence_ids):
     
     return position_ids
 
+
 class ItemSeqDataset(Dataset):
 
     target_pad = -100
@@ -98,6 +120,39 @@ class ItemSeqDataset(Dataset):
     def __len__(self):
         return len(self.packed_x)
     
+
+def collate_fn(batch):
+    x, y, seq, pos = list(zip(*batch))
+    x = torch.tensor(x, dtype=torch.long)
+    y = torch.tensor(y, dtype=torch.long)
+    seq = torch.tensor(seq, dtype=torch.long)
+    pos = torch.tensor(pos, dtype=torch.long)
+    return x, y, seq, pos
+
+
+class SimpleDS(Dataset):
+    def __init__(self, sequences):
+        super().__init__()
+        self.sequences = sequences
+
+    def __getitem__(self, index):
+        seq = self.sequences[index]
+        x, y = seq[:-1], seq[-1]
+        return x, y
+    
+    def __len__(self):
+        return len(self.sequences)
+    
+
+def simpleds_collate_fn(batch):
+    pad_id = 0
+    x, y = list(zip(*batch))
+    max_seq_len = max([len(s) for s in x])
+    x = [s + (max_seq_len-len(s)) * [pad_id] for s in x]
+    x = torch.tensor(x, dtype=torch.long)
+    y = torch.tensor(y, dtype=torch.long)
+    return x, y
+
 
 def calculate_map_at_k_torch(pairs, k=10):
     """
@@ -162,26 +217,3 @@ def validate(model, valid_dl, iter_num, ctx):
     t2 = time.time()
     print(f"step {iter_num}: map top_k oneshot {top_k_map:.4f}, time clc: {t2-t1:.4f}")
     model.train()
-
-class SimpleDS(Dataset):
-    def __init__(self, sequences):
-        super().__init__()
-        self.sequences = sequences
-
-    def __getitem__(self, index):
-        seq = self.sequences[index]
-        x, y = seq[:-1], seq[-1]
-        return x, y
-    
-    def __len__(self):
-        return len(self.sequences)
-    
-
-def simpleds_collate_fn(batch):
-    pad_id = 0
-    x, y = list(zip(*batch))
-    max_seq_len = max([len(s) for s in x])
-    x = [s + (max_seq_len-len(s)) * [pad_id] for s in x]
-    x = torch.tensor(x, dtype=torch.long)
-    y = torch.tensor(y, dtype=torch.long)
-    return x, y
