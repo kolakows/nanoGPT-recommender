@@ -3,13 +3,13 @@
 Adaptation of [nanoGPT model](https://github.com/karpathy/nanoGPT) to a task of Amazon product recommendation for [Data Science Club PJATK kaggle challenge](https://www.kaggle.com/competitions/product-recommendation-challenge).
 
 The idea is to treat purchases as sequences of tokens (item_ids), and based on user's current history we predict next item that will be bought. During training we take available sequences and shift them one left to make targets (next word prediction target).
-Additionally this repo leverages SigLIP embeddings to incorporate image data into the model.
+Additionally this repo leverages [SigLIP](https://huggingface.co/docs/transformers/model_doc/siglip) embeddings to incorporate image data into the model.
 
 Key changes to the original architecture:
 - pack input sequences for more efficient training (70% of training dataset, ~600k rows, are sequences of length 2, so after making it a training example, it's just one input, one output token per row)
     - adapt causal attention mask, so independent samples don't influence each other, see [here](https://huggingface.co/blog/sirluk/llm-sequence-packing) for visual example of the attention masking that was needed
     - generate pos ids which start from 0 for each sample in a packed sequence, so positional info is reflected correctly during inference where samples will always have positional info starting from 0
-- add SigLIP embedding layer
+- add [SigLIP](https://huggingface.co/docs/transformers/model_doc/siglip) embedding layer
     - lookup image embeddings for each item_id, then add them to the initial embedddings, so `tok_emb + pos_emb + siglip_proj` (where `siglip_proj = linear(siglip_emb)` projects embeddings to match the model's dimension)
     - kept SigLIP's embeddings frozen, left linear projection trainable
 
