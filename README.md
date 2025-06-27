@@ -1,6 +1,6 @@
 # nanoGPT-recommender
 
-Adaptation of original nanoGPT model to a task of Amazon product recommendation for [Data Science Club PJATK kaggle challenge](https://www.kaggle.com/competitions/product-recommendation-challenge).
+Adaptation of [nanoGPT model](https://github.com/karpathy/nanoGPT) to a task of Amazon product recommendation for [Data Science Club PJATK kaggle challenge](https://www.kaggle.com/competitions/product-recommendation-challenge).
 
 The idea is simple, let's treat purchases as sequences of tokens (item_ids), and based on user's current history let's predict next item that will be bought. During training we take available sequences and shift them one left to make targets (next word prediction target).
 Additionally this repo leverages SigLIP embeddings to incorporate image data into the model.
