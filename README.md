@@ -36,3 +36,39 @@ Additionaly there's a simplified version of training script `simple_train.py` an
 6. `siglip_oneshot` including SigLIP embeddings.
 7. `with_decay` for previous runs I've been using a very minimal version of training script, here I've made a refactor to make it run faster and additionally added LR decay back from the original training script.
 8. `all_data` putting back the validation dataset (10% of all entries) back into the training dataset, training for the same amount of steps as previous models.
+
+# Trying out Flex Attention
+
+In nanoGPT-flex I've used [Flex Attention](https://pytorch.org/blog/flexattention/) which provides a convenient interface for working with custom attention masking and also optimizes computation for spare masks by computing attention in blocks, which also avoids materializing the whole mask tensor.
+
+[Here's](https://pytorch.org/blog/flexattention/#document-maskingjagged-sequences) an example on how to combine document and prefixLM masking (prefix + causal + document masking). In our use case we're combining only document and causal masking and it looks like this
+
+```
+def document_causal_mask(b, h, q_idx, kv_idx):
+    causal_mask = q_idx >= kv_idx
+    document_mask = sequence_ids[b, q_idx] == sequence_ids[b, kv_idx]
+    return causal_mask & document_mask
+
+block_mask = create_block_mask(document_causal_mask, b, None, t, t, device=device, BLOCK_SIZE=128)
+
+(...)
+
+y = flex_attention(q, k, v, block_mask=block_mask)
+```
+
+When creating block mask it seems that 128 is the lowest value that works, it might work with 64, but didn't for me ([see here](https://github.com/pytorch/pytorch/issues/133562)). With `batch_size=256`, there seems to be a small speedup compared to `scaled_dot_product_attention`.
+
+# Trying out Nested Jagged Tensors
+
+[NJTs](https://docs.pytorch.org/docs/stable/nested.html) allow for one of the tensor dimensions to be ragged, meaning that we can skip padding samples of different length and they get packed compactly in a tensor ([see here](https://docs.pytorch.org/docs/stable/nested.html#data-layout-and-shape)). NJTs need special support from operations to accommodate for their structure and `flex_attention` has added this support recently ([see here](https://docs.pytorch.org/blog/flexattention-for-inference/#ragged-input-sequences-with-nested-jagged-tensors-njts)). Unfortunately after some testing it turns out that it breaks when used with `torch.compile` and this combination of `flex_attention` + NJTs + `torch.compile` is discouraged for now by PyTorch team, [see here](https://github.com/pytorch/pytorch/issues/154556#issuecomment-2945803620). 
+
+Left a commented out version of a variant using NJTs in nanoGPT-flex, it works without `torch.compile` but is slow. I also couldn't fully get rid of padding, needed to use a normal tensor with `sequence_ids`, because of the tensor indexing which is used in `document_causal_mask` (e.g. `sequence_ids[b, q_idx]`) and which is not supported with NJTs. 
+
+For NJTs addition also needs to be done a bit differently than the regular `c = a + b`
+```
+# jagged version of e = tok_emb + pos_emb
+
+ev = tok_emb.values() + pos_emb.values()
+e = torch.nested.nested_tensor_from_jagged(values=ev, offsets=tok_emb.offsets())
+```
+When `tok_emb` and `pos_emb` are NJTs their dims may look like this `[32, j4, 192]` and `[32, j5, 192]`, where `jx` indicates a jagged dimension. And because the NJTs were created separately (as a result of embedding `ids` and `pos_ids`, which share the same structure but are created separately), they got a different dimension indicator. So although the addition makes sense to perform, PyTorch doesn't check that. To bypass that, we can take a flat view of NJT which we access by doing `x.values()` and perform the elementwise addition. After the operation we construct a NJT from the result by passing a flat tensor from the result of addition and inform PyTorch of its jagged structure by passing offsets ourselves. And that's the recommended approach from [NJTs docs](https://docs.pytorch.org/docs/stable/nested.html#ragged-structure-incompatibility).
